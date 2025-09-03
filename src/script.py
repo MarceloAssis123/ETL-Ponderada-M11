@@ -41,7 +41,7 @@ def wait_clickhouse(max_wait_s: int = 60):
     while True:
         try:
             r = requests.get(CH_PING_URL, timeout=2)
-            if r.ok and r.text.strip() == "OK":
+            if r.ok and r.text.strip() == "Ok.":
                 return
         except Exception:
             pass

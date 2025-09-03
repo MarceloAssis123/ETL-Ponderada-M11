@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: clickhouse
+    environment:
+      CLICKHOUSE_USER: chuser
+      CLICKHOUSE_PASSWORD: chpass
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123"        # HTTP (use este)
+      # não exponha 9000 do ClickHouse para evitar conflito com MinIO
+    volumes:
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ch_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q OK"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9002:9000"        # host:container (S3 API no host em 9002)
+      - "9001:9001"        # console
+    volumes:
+      - minio_data:/data
+
+  mc-init:
+    image: quay.io/minio/mc:latest
+    container_name: mc-init
+    depends_on:
+      - minio
+    entrypoint: >
+      sh -c "
+      until /usr/bin/mc alias set local http://minio:9000 minio minio12345; do sleep 2; done &&
+      /usr/bin/mc mb -p local/ingestion || true &&
+      echo 'bucket ingestion pronto'
+      "
+
+  ingestor:
+    image: python:3.12-slim
+    container_name: ingestor
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    working_dir: /app
+    volumes:
+      - ./:/app:ro
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio12345
+      S3_BUCKET: ingestion
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: chuser
+      CLICKHOUSE_PASSWORD: chpass
+      CLICKHOUSE_DATABASE: default
+      CLICKHOUSE_TABLE: data_ingestion
+    command: >
+      sh -c "pip install --no-cache-dir minio clickhouse-connect pandas requests &&
+             python script.py"
+
+volumes:
+  ch_data:
+  minio_data:
